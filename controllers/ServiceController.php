@@ -1,0 +1,69 @@
+<?php
+namespace app\controllers;
+use PhpAmqpLib\Connection\AMQPStreamConnection;
+use yii\web\Controller;
+use Yii;
+class ServiceController extends Controller
+{
+    const exchange = 'router-yii-db';
+    const queue = 'msgs-yii-db';
+    const consumerTag = 'consumer-yii-db';
+
+    function shutdown($channel, $connection)
+    {
+        $channel->close();
+        $connection->close();
+        Yii::trace("closed");
+    }
+
+    function process_message($message)
+    {
+
+        if ($message->body !== 'quit') {
+            $obj = json_decode($message->body);
+            if (0) {
+                Yii::trace( "error data1:" . $message->body);
+            } else {
+                try {
+                    // $db=MysqliDB::getIntance();
+                    // $db->insert('log_cp',['time'=>date('Y-m-d H:i:s')]);
+                    Yii::$app->db->createCommand()->insert('log_db', ['time' => date('Y-m-d H:i:s')])->execute();
+                    Yii::trace("data:" . json_encode($message));
+                } catch (\Think\Exception  $e) {
+                    Yii::trace($e->getMessage());
+                    Yii::trace(json_encode($message));
+                } catch (\PDOException $pe) {
+                    Yii::trace($pe->getMessage());
+                    Yii::trace(json_encode($message));
+                }
+            }
+        }
+        $message->delivery_info['channel']->basic_ack($message->delivery_info['delivery_tag']);
+        // Send a message with the string "quit" to cancel the consumer.
+        if ($message->body === 'quit') {
+            $message->delivery_info['channel']->basic_cancel($message->delivery_info['consumer_tag']);
+        }
+    }
+
+    /**
+     * 启动
+     *
+     * @return \think\Response
+     */
+    public function actionStart()
+    {
+        $connection = new AMQPStreamConnection('127.0.0.1', 5672, 'guest', 'guest', '/');
+        $channel = $connection->channel();
+        $channel->queue_declare(self::queue, false, true, false, false);
+        $channel->exchange_declare(self::exchange, 'direct', false, true, false);
+        $channel->queue_bind(self::queue, self::exchange);
+
+        $channel->basic_consume(self::queue, self::consumerTag, false, false, false, false, array($this, 'process_message'));
+        register_shutdown_function(array($this, 'shutdown'), $channel, $connection);
+        while (count($channel->callbacks)) {
+            $channel->wait();
+        }
+        Yii::trace("starting");
+    }
+
+}
